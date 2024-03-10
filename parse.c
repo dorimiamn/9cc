@@ -1,58 +1,6 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <string.h>
+#include "9cc.h"
 
-// 抽象構文木のノードの種類
-typedef enum
-{
-    ND_ADD,
-    ND_SUB,
-    ND_MUL,
-    ND_DIV,
-    ND_EQ,
-    ND_NE,
-    ND_LT,
-    ND_LE,
-    ND_NUM,
-} NodeKind;
-
-typedef struct Node Node;
-
-// 抽象構文木のノードの型
-struct Node
-{
-    NodeKind kind; // ノードの型
-    Node *lhs;     // 左辺
-    Node *rhs;     // 右辺
-    int val;       // kindがND_NUMの場合のみ使う
-};
-
-typedef enum
-{
-    TK_RESERVED, // 記号
-    TK_NUM,      // 整数トークン
-    TK_EOF,      // 入力の終わりを表すトークン
-} TokenKind;
-
-typedef struct Token Token;
-
-struct Token
-{
-    TokenKind kind; // トークンの型
-    Token *next;    // 次の入力トークン
-    int val;        // kindがTK_NUMの場合、その数値
-    char *str;      // トークン文字列
-    int len;        // トークンの長さ
-};
-
-// 現在着目しているトークン
-Token *token;
-
-// 入力プログラム
-char *user_input;
+Node *code[100];
 
 // エラー箇所を報告する関数
 void error_at(char *loc, char *fmt, ...) {
@@ -123,7 +71,10 @@ Node *new_node_num(int val)
     return node;
 }
 
+Node *program();
+Node *stmt();
 Node *expr();
+Node *assign();
 Node *equality();
 Node *relational();
 Node *add();
@@ -220,9 +171,48 @@ Node *equality()
     }
 }
 
+Node *assign()
+{
+    Node *node = equality();
+    if (consume("=")) {
+        node = new_node(ND_ASSIGN, node, assign());
+    }
+    return node;
+}
+
 Node *expr()
 {
-    return equality();
+    return assign();
+}
+
+Node *stmt()
+{
+    Node *node = expr();
+    expect(";");
+    return node;
+}
+
+void *program()
+{
+    int i = 0;
+    while (!at_eof())
+    {
+        code[i++] = stmt();
+    }
+    code[i] = NULL;
+}
+
+// 変数を名前で検索する。見つからなかった場合はNULLを返す。
+LVar *find_lvar(Token *tok)
+{
+    for (LVar *var = locals; var; var = var->next)
+    {
+        if (var->len == tok->len && !memcmp(tok->str, var->name, var->len))
+        {
+            return var;
+        }
+    }
+    return NULL;
 }
 
 // 新しいトークンを作成してcurに繋げる
@@ -259,6 +249,12 @@ Token *tokenize(char *p)
             continue;
         }
 
+        if ('a' <= *p && *p <= 'z') {
+            cur = new_token(TK_IDENT, cur, p++);
+            cur->len = 1;
+            continue;
+        }
+
         if(startswith(p, "==") || startswith(p, "!=") || startswith(p, "<=") || startswith(p, ">="))
         {
             cur = new_token(TK_RESERVED, cur, p, 2);
@@ -286,88 +282,4 @@ Token *tokenize(char *p)
 
     new_token(TK_EOF, cur, p, 0);
     return head.next;
-}
-
-void gen(Node *node)
-{
-    if(node->kind == ND_NUM) {
-        printf("  push %d\n", node->val);
-        return;
-    }
-
-    gen(node->lhs);
-    gen(node->rhs);
-
-    printf("  pop rdi\n");
-    printf("  pop rax\n");
-
-    switch (node->kind)
-    {
-    case ND_ADD:
-        printf("  add rax, rdi\n");
-        break;
-    case ND_SUB:
-        printf("  sub rax, rdi\n");
-        break;
-    case ND_MUL:
-        printf("  imul rax, rdi\n");
-        break;
-    case ND_DIV:
-        printf("  cqo\n");
-        printf("  idiv rdi\n");
-        break;
-    case ND_EQ:
-        printf("  cmp rax, rdi\n");
-        printf("  sete al\n");
-        printf("  movzb rax, al\n");
-        break;
-    case ND_NE:
-        printf("  cmp rax, rdi\n");
-        printf("  setne al\n");
-        printf("  movzb rax, al\n");
-        break;
-    case ND_LT:
-        printf("  cmp rax, rdi\n");
-        printf("  setl al\n");
-        printf("  movzb rax, al\n");
-        break;
-    case ND_LE:
-        printf("  cmp rax, rdi\n");
-        printf("  setle al\n");
-        printf("  movzb rax, al\n");
-        break;
-    }
-
-    printf("  push rax\n");
-}
-
-int main(int argc, char **argv)
-{
-    if (argc != 2)
-    {
-        fprintf(stderr, "引数の個数が正しくありません\n");
-        return 1;
-    }
-
-    // 入力文字列をグローバル変数に保存しておく
-    user_input = argv[1];
-
-    // トークナイズ
-    token = tokenize(user_input);
-
-    // パース
-    Node *node = expr();
-
-    // アセンブリの前半部分を出力
-    printf(".intel_syntax noprefix\n");
-    printf(".globl main\n");
-    printf("main:\n");
-
-    // 抽象構文木を下りながらコード生成
-    gen(node);
-
-    // スタックトップに式全体の値が残っているはずなので、それをRAXにロードして関数からの返り値とする
-    printf("  pop rax\n");
-    printf("  ret\n");
-    return 0;
 }
